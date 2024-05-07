@@ -147,7 +147,7 @@ class LoRAModel:
         pin_memory = str(device) == "cpu" and is_pin_memory_available()
         loras: Dict[str, LoRALayerWeights] = {}
         for tensor_name, tensor in tensors.items():
-            module_name, is_lora_a = parse_fine_tuned_lora_name(tensor_name)
+            module_name, is_lora_a, is_lora_b, is_lora_sigma = parse_fine_tuned_lora_name(tensor_name)
             if module_name not in loras:
                 lora_embeddings_tensor = None
                 if embeddings:
@@ -171,7 +171,7 @@ class LoRAModel:
                 if pin_memory:
                     loras[module_name].lora_a = loras[
                         module_name].lora_a.pin_memory()
-            else:
+            elif is_lora_b:
                 loras[module_name].lora_b = tensor.to(device=device,
                                                       dtype=dtype).t()
                 assert embedding_padding_modules is not None
@@ -186,6 +186,12 @@ class LoRAModel:
                 if pin_memory:
                     loras[module_name].lora_b = loras[
                         module_name].lora_b.pin_memory()
+            elif is_lora_sigma:
+                loras[module_name].lora_sigma = tensor.to(device=device,
+                                                          dtype=dtype).t()
+                if pin_memory:
+                    loras[module_name].lora_sigma = loras[
+                        module_name].lora_sigma.pin_memory()
 
         for lora in loras.values():
             lora.optimize()

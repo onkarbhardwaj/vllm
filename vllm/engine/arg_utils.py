@@ -54,6 +54,7 @@ class EngineArgs:
     max_lora_rank: int = 16
     fully_sharded_loras: bool = False
     lora_extra_vocab_size: int = 256
+    lora_sigma_optimizer: bool = False
     lora_dtype = 'auto'
     max_cpu_loras: Optional[int] = None
     device: str = 'auto'
@@ -365,6 +366,9 @@ class EngineArgs:
             help=('Maximum size of extra vocabulary that can be '
                   'present in a LoRA adapter (added to the base '
                   'model vocabulary).'))
+        parser.add_argument('--lora-sigma-optimizer',
+                            action='store_true',
+                            help='If True, enables [U, sigma, V] optimized serving for LoRA.')
         parser.add_argument(
             '--lora-dtype',
             type=str,
@@ -539,6 +543,7 @@ class EngineArgs:
             fully_sharded_loras=self.fully_sharded_loras,
             lora_extra_vocab_size=self.lora_extra_vocab_size,
             lora_dtype=self.lora_dtype,
+            sigma_optimizer=self.lora_sigma_optimizer,
             max_cpu_loras=self.max_cpu_loras if self.max_cpu_loras
             and self.max_cpu_loras > 0 else None) if self.enable_lora else None
 

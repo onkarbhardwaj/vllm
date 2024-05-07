@@ -16,6 +16,7 @@ from vllm.distributed import (get_tensor_model_parallel_rank,
                               tensor_model_parallel_all_reduce,
                               tensor_model_parallel_gather)
 from vllm.distributed.utils import divide
+from vllm.logger import init_logger
 from vllm.lora.punica import add_lora, add_lora_slice, bgmv
 from vllm.model_executor.layers.linear import (ColumnParallelLinear,
                                                MergedColumnParallelLinear,
@@ -24,6 +25,8 @@ from vllm.model_executor.layers.linear import (ColumnParallelLinear,
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding)
+
+logger = init_logger(__name__)
 
 if TYPE_CHECKING:
     pass
@@ -197,6 +200,7 @@ class BaseLayerWithLoRA(nn.Module):
 class VocabParallelEmbeddingWithLoRA(BaseLayerWithLoRA):
 
     def __init__(self, base_layer: VocabParallelEmbedding) -> None:
+        logger.debug(f"Creating {self.__class__.__name__}")
         super().__init__()
         self.base_layer = base_layer
         self.embeddings_slice: Optional[Tuple[int, int]]
@@ -276,6 +280,7 @@ class VocabParallelEmbeddingWithLoRA(BaseLayerWithLoRA):
         embeddings_tensor: Optional[torch.Tensor],
     ):
         self.reset_lora(index)
+        logger.info(f"lora_a and lora_b devices: {lora_a.get_device()}, {lora_b.get_device()}")
         self.lora_a_stacked[index, :lora_a.shape[0], :lora_a.shape[1]].copy_(
             lora_a, non_blocking=True)
         self.lora_b_stacked[index,
@@ -348,6 +353,7 @@ class ColumnParallelLinearWithLoRA(BaseLayerWithLoRA):
 
     def __init__(self, base_layer: ColumnParallelLinear) -> None:
         super().__init__()
+        logger.debug(f"Creating {self.__class__.__name__}")
         self.base_layer = base_layer
         self.tp_size = get_tensor_model_parallel_world_size()
         self.input_size = self.base_layer.input_size
@@ -380,6 +386,16 @@ class ColumnParallelLinearWithLoRA(BaseLayerWithLoRA):
             dtype=lora_config.lora_dtype,
             device=self.device,
         )
+        if self.lora_config.sigma_optimizer:
+            logger.info(f"Creating stacked sigma for {self.__class__.__name__}")
+            self.lora_sigma_stacked = torch.zeros(
+                max_loras,
+                1,
+                lora_config.max_lora_rank,
+                lora_config.max_lora_rank,
+                dtype=lora_config.lora_dtype,
+                device=self.device,
+            )
         self.output_dim = self.lora_b_stacked.shape[2]
 
         # lazily initialized.
@@ -489,6 +505,7 @@ class MergedColumnParallelLinearWithLoRA(ColumnParallelLinearWithLoRA):
 
     def __init__(self, base_layer: MergedColumnParallelLinear) -> None:
         super().__init__(base_layer)
+        logger.debug(f"Creating {self.__class__.__name__}")
 
     def create_lora_weights(
             self,
@@ -616,6 +633,7 @@ class QKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
 
     def __init__(self, base_layer: QKVParallelLinear) -> None:
         super().__init__(base_layer)
+        logger.debug(f"Creating {self.__class__.__name__}")
         self.tp_size = get_tensor_model_parallel_world_size()
         self.q_proj_total_size = (self.base_layer.total_num_heads *
                                   self.base_layer.head_size)
@@ -679,6 +697,7 @@ class MergedQKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
 
     def __init__(self, base_layer: QKVParallelLinear) -> None:
         super().__init__(base_layer)
+        logger.debug(f"Creating {self.__class__.__name__}")
 
     def create_lora_weights(
             self,
@@ -751,6 +770,34 @@ class MergedQKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
                 device=self.device,
             ),
         )
+        if lora_config.sigma_optimizer:
+            logger.info(f"Creating stacked sigma for {self.__class__.__name__}")
+            self.lora_sigma_stacked = (
+                torch.zeros(
+                    max_loras,
+                    1,
+                    lora_config.max_lora_rank,
+                    lora_config.max_lora_rank,
+                    dtype=lora_config.lora_dtype,
+                    device=self.device,
+                ),
+                torch.zeros(
+                    max_loras,
+                    1,
+                    lora_config.max_lora_rank,
+                    lora_config.max_lora_rank,
+                    dtype=lora_config.lora_dtype,
+                    device=self.device,
+                ),
+                torch.zeros(
+                    max_loras,
+                    1,
+                    lora_config.max_lora_rank,
+                    lora_config.max_lora_rank,
+                    dtype=lora_config.lora_dtype,
+                    device=self.device,
+                ),
+            )
 
         self.output_slices = (self.q_proj_shard_size, self.kv_proj_shard_size,
                               self.kv_proj_shard_size)
@@ -854,6 +901,7 @@ class RowParallelLinearWithLoRA(BaseLayerWithLoRA):
 
     def __init__(self, base_layer: RowParallelLinear) -> None:
         super().__init__()
+        logger.debug(f"Creating {self.__class__.__name__}")
         self.base_layer = base_layer
         self.input_size = self.base_layer.input_size_per_partition
         self.output_size = self.base_layer.output_size
@@ -891,6 +939,20 @@ class RowParallelLinearWithLoRA(BaseLayerWithLoRA):
             dtype=lora_config.lora_dtype,
             device=self.device,
         )
+
+        if lora_config.sigma_optimizer:
+            logger.info(f"Creating stacked sigma for {self.__class__.__name__}")
+            self.lora_sigma_stacked = torch.zeros(
+                (
+                    max_loras,
+                    1,
+                    lora_config.max_lora_rank,
+                    lora_config.max_lora_rank,
+                ),
+                dtype=lora_config.lora_dtype,
+                device=self.device,
+            )
+
         # Lazily initialized
         self.indices: torch.Tensor
         self.indices_len: List[int]
@@ -1014,6 +1076,7 @@ class LogitsProcessorWithLoRA(BaseLayerWithLoRA):
         device: torch.device,
     ) -> None:
         super().__init__()
+        logger.debug(f"Creating {self.__class__.__name__}")
         self.base_layer = base_layer
         self.hidden_size = hidden_size
         self.dtype = dtype

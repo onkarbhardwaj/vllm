@@ -23,6 +23,7 @@ class LoRALayerWeights:
         self.lora_alpha = lora_alpha
         self.lora_a = lora_a
         self.lora_b = lora_b
+        self.lora_sigma = None
         self.embeddings_tensor = embeddings_tensor
 
         if scaling is None:

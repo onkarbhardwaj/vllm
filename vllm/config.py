@@ -918,6 +918,7 @@ class LoRAConfig:
     lora_extra_vocab_size: int = 256
     # This is a constant.
     lora_vocab_padding_size: ClassVar[int] = 256
+    sigma_optimizer: bool = False
 
     def __post_init__(self):
         # Keep this in sync with csrc/punica/bgmv/bgmv_config.h
@@ -939,6 +940,8 @@ class LoRAConfig:
             raise ValueError(
                 f"max_cpu_loras ({self.max_cpu_loras}) must be >= "
                 f"max_loras ({self.max_loras})")
+        elif self.sigma_optimizer and self.fully_sharded_loras:
+            raise ValueError(f"Sigma Optimizer for LORA not compatible with fully sharded mode.")
 
     def verify_with_model_config(self, model_config: ModelConfig):
         if self.lora_dtype in (None, "auto"):

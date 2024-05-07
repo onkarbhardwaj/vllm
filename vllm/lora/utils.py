@@ -46,6 +46,7 @@ def from_layer(layer: nn.Module,
                                       lora_config=lora_config,
                                       packed_modules_list=packed_modules_list,
                                       model_config=model_config):
+            logger.info(f"Layer {type(layer)} can be replaced by {lora_cls}")
             ret = lora_cls(layer)
             ret.create_lora_weights(max_loras, lora_config, model_config)
             return ret
@@ -70,11 +71,12 @@ def replace_submodule(model: nn.Module, module_name: str,
     """Replace a submodule in a model with a new module."""
     parent = model.get_submodule(".".join(module_name.split(".")[:-1]))
     target_name = module_name.split(".")[-1]
+    logger.info(f"Replacing {module_name} by {target_name} by means of setattr")
     setattr(parent, target_name, new_module)
     return new_module
 
 
-def parse_fine_tuned_lora_name(name: str) -> Tuple[str, bool]:
+def parse_fine_tuned_lora_name(name: str) -> Tuple[str, bool, bool, bool]:
     """Parse the name of lora weights.
 
     args:
@@ -89,10 +91,10 @@ def parse_fine_tuned_lora_name(name: str) -> Tuple[str, bool]:
     assert parts[0] == "base_model"
     assert parts[1] == "model"
     if parts[-1] == "weight":
-        assert parts[-2] == "lora_A" or parts[-2] == "lora_B"
-        return ".".join(parts[2:-2]), parts[-2] == "lora_A"
+        assert parts[-2] == "lora_A" or parts[-2] == "lora_B" or parts[-2] == "lora_sigma"
+        return ".".join(parts[2:-2]), parts[-2] == "lora_A", parts[-2] == "lora_B", parts[-2] == "lora_sigma"
 
-    if parts[-1] == "lora_embedding_A" or parts[-1] == "lora_embedding_B":
-        return ".".join(parts[2:-1]), parts[-1] == "lora_embedding_A"
+    if parts[-1] == "lora_embedding_A" or parts[-1] == "lora_embedding_B" or parts[-1] == "lora_embedding_sigma":
+        return ".".join(parts[2:-1]), parts[-1] == "lora_embedding_A", parts[-1] == "lora_embedding_B", parts[-1] == "lora_embedding_sigma"
 
     raise ValueError(f"{name} is unsupported format")
