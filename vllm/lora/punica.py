@@ -140,6 +140,60 @@ def add_lora(y: torch.Tensor,
                                  scale)
 
 
+def add_lora_with_sigma(y: torch.Tensor,
+             x: torch.Tensor,
+             wa_t_all: torch.Tensor,
+             wb_t_all: torch.Tensor,
+             wsigma_t_all: torch.Tensor,
+             indicies: torch.LongTensor,
+             layer_idx: int,
+             scale: float,
+             *,
+             buffer: Optional[torch.Tensor] = None):
+    """
+    Semantics:
+      y[i] += (
+          x[i].unsqueeze(0)
+          @ wa_t_all[indices[i], layer_idx, :, :].transpose(-1, -2)
+          @ wb_t_all[indices[i], layer_idx, :, :].transpose(-1, -2)
+          * scale
+        ).squeeze(0)
+
+    Args:
+      y: Shape: `[B, H2]`. Output vectors. Will be changed in-place.
+      x: Shape: `[B, H1]`. Input vectors.
+      wa_t_all: Shape: `[None, L, R, H1]`. All of the transposed
+        LoRA A matrices.
+      wsigma_t_all: Shape: `[None, R, R, H1]`. All of the transposed
+        LoRA sigma matrices.
+      wb_t_all: Shape: `[None, L, H2, R]`. All of the transposed
+        LoRA B matrices.
+      indicies: Shape: `[B]`. Indices of the LoRA weights.
+      layer_idx: Layer index of LoRA weights.
+      scale: Scaling factor.
+      buffer: Optional. Shape: `[B, R]`. Temporary buffer.
+    """
+    try:
+        import vllm._punica_C as punica_kernels
+    except ImportError as e:
+        _raise_import_error(e)
+
+    r = wb_t_all.size(-1)
+    if buffer is None:
+        # We set the buffer to be float32 by default to avoid
+        # numerical inaccuracies that would otherwise happen
+        # due to downcasting.
+        buffer = torch.zeros((x.size(0), r),
+                             dtype=torch.float32,
+                             device=x.device)
+        buffer_sigma = torch.zeros((x.size(0), r),
+                             dtype=torch.float32,
+                             device=x.device)
+    punica_kernels.dispatch_bgmv(buffer, x, wa_t_all, indicies, layer_idx, 1.0)
+    punica_kernels.dispatch_bgmv(buffer_sigma, buffer, wsigma_t_all, indicies, layer_idx, 1.0)
+    punica_kernels.dispatch_bgmv(y, buffer_sigma, wb_t_all, indicies, layer_idx, scale)
+
+
 def add_lora_slice(y: torch.Tensor,
                    x: torch.Tensor,
                    wa_t_all: torch.Tensor,
