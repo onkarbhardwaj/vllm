@@ -46,7 +46,7 @@ def from_layer(layer: nn.Module,
                                       lora_config=lora_config,
                                       packed_modules_list=packed_modules_list,
                                       model_config=model_config):
-            logger.info(f"Layer {type(layer)} can be replaced by {lora_cls}")
+            logger.sigmadebug(f"Layer {type(layer)} can be replaced by {lora_cls}")
             ret = lora_cls(layer)
             ret.create_lora_weights(max_loras, lora_config, model_config)
             return ret
@@ -71,7 +71,7 @@ def replace_submodule(model: nn.Module, module_name: str,
     """Replace a submodule in a model with a new module."""
     parent = model.get_submodule(".".join(module_name.split(".")[:-1]))
     target_name = module_name.split(".")[-1]
-    logger.info(f"Replacing {module_name} by {target_name} by means of setattr")
+    logger.sigmadebug(f"Replacing {module_name} by {target_name} by means of setattr")
     setattr(parent, target_name, new_module)
     return new_module
 

@@ -4,6 +4,10 @@ from typing import Optional
 
 import torch
 
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
+
 
 def _raise_import_error(e):
     if torch.cuda.get_device_capability() < (8, 0):
@@ -186,7 +190,7 @@ def add_lora_with_sigma(y: torch.Tensor,
         buffer = torch.zeros((x.size(0), r),
                              dtype=torch.float32,
                              device=x.device)
-        buffer_sigma = torch.zeros((x.size(0), r),
+        buffer_sigma = torch.zeros((buffer.size(0), r),
                              dtype=torch.float32,
                              device=x.device)
     punica_kernels.dispatch_bgmv(buffer, x, wa_t_all, indicies, layer_idx, 1.0)
@@ -243,6 +247,8 @@ def add_lora_slice(y: torch.Tensor,
         buffer = torch.zeros((x.size(0), r),
                              dtype=torch.float32,
                              device=x.device)
+    logger.sigmadebug(f"Shapes of slices: A {wa_t_all.shape}, B {wb_t_all.shape}, buffer {buffer.shape}, x {x.shape}, y {y.shape}")
+    logger.sigmadebug(f"Indices: {indicies.shape}")
     punica_kernels.dispatch_bgmv_low_level(
         buffer,
         x,
@@ -262,6 +268,103 @@ def add_lora_slice(y: torch.Tensor,
         layer_idx,
         scale,
         buffer.size(1),
+        y_slice_size,
+        y_offset,
+    )
+
+
+def add_lora_slice_with_sigma(y: torch.Tensor,
+                   x: torch.Tensor,
+                   wa_t_all: torch.Tensor,
+                   wb_t_all: torch.Tensor,
+                   wsigma_t_all: torch.Tensor,
+                   indicies: torch.LongTensor,
+                   layer_idx: int,
+                   scale: float,
+                   y_offset: int,
+                   y_slice_size: int,
+                   *,
+                   buffer: Optional[torch.Tensor] = None):
+    """
+    Same as `add_lora` but you can operate on slices of y.
+    Pass whole y, define y_offset and y_slice_size.
+
+    Semantics:
+      y[i] += (
+          x[i].unsqueeze(0)
+          @ wa_t_all[indices[i], layer_idx, :, :].transpose(-1, -2)
+          @ wb_t_all[indices[i], layer_idx, :, :].transpose(-1, -2)
+          * scale
+        ).squeeze(0)
+
+    Args:
+      y: Shape: `[B, H2]`. Output vectors. Will be changed in-place.
+      x: Shape: `[B, H1]`. Input vectors.
+      wa_t_all: Shape: `[None, L, R, H1]`. All of the transposed
+        LoRA A matrices.
+      wb_t_all: Shape: `[None, L, H2, R]`. All of the transposed
+        LoRA B matrices.
+      indicies: Shape: `[B]`. Indices of the LoRA weights.
+      layer_idx: Layer index of LoRA weights.
+      scale: Scaling factor.
+      y_offset: Offset to apply to the starting column of y.
+      y_slice_size: Size of the y column slice.
+    """
+    try:
+        import vllm._punica_C as punica_kernels
+    except ImportError as e:
+        _raise_import_error(e)
+
+    logger.sigma(f"Executing add_lora_slice_with_sigma")
+    r = wb_t_all.size(-1)
+    if buffer is None:
+        # We set the buffer to be float32 by default to avoid
+        # numerical inaccuracies that would otherwise happen
+        # due to downcasting.
+        buffer = torch.zeros((x.size(0), r),
+                             dtype=torch.bfloat16,
+                             device=x.device)
+        buffer_sigma = torch.zeros((buffer.size(0), r),
+                             dtype=torch.bfloat16,
+                             device=x.device)
+    logger.sigmadebug(f"Types of slices: x {x.type()}, y {y.type()}, U {wa_t_all.type()}, Sigma {wsigma_t_all.type()}, V {wb_t_all.type()}, b1 {buffer.type()}, b2 {buffer_sigma.type()}")
+    logger.sigmadebug(f"Shapes of slices: U {wa_t_all.shape}, Sigma {wsigma_t_all.shape}, V {wb_t_all.shape}, b1 {buffer.shape}, b2 {buffer_sigma.shape}")
+    logger.sigmadebug(f"bgmv: m {x.shape}, v {wa_t_all.shape}, result {buffer.shape}")
+    punica_kernels.dispatch_bgmv_low_level(
+        buffer,
+        x,
+        wa_t_all,
+        indicies,
+        layer_idx,
+        1.0,
+        x.size(1),
+        buffer.size(1),
+        0,
+    )
+    logger.sigmadebug(f"bgmv: m {buffer.shape}, v {wsigma_t_all.shape}, result {buffer_sigma.shape}")
+    logger.sigmadebug(f"bgmv types: m {buffer.type()}, v {wsigma_t_all.type()}, result {buffer_sigma.type()}")
+    # with torch.autocast(device_type="cuda"):
+    # _ = torch.matmul(buffer, wsigma_t_all, out=buffer_sigma)
+    punica_kernels.dispatch_bgmv_low_level(
+        buffer_sigma,
+        buffer,
+        wsigma_t_all,
+        indicies,
+        layer_idx,
+        1.0,
+        buffer.size(1),
+        buffer_sigma.size(1),
+        0,
+    )
+    logger.sigmadebug(f"bgmv: m {buffer_sigma.shape}, v {wb_t_all.shape}, result {y.shape}")
+    punica_kernels.dispatch_bgmv_low_level(
+        y,
+        buffer_sigma,
+        wb_t_all,
+        indicies,
+        layer_idx,
+        scale,
+        buffer_sigma.size(1),
         y_slice_size,
         y_offset,
     )

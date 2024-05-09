@@ -57,7 +57,7 @@ def create_test_prompts_no_churn(
 ):
     return [[
         (
-            "[user] Write a SQL query to answer the question based on the table schema.\n\n context: CREATE TABLE table_name_74 (icao VARCHAR, airport VARCHAR)\n\n question: Name the ICAO for lilongwe international airport [/user] [assistant]",  # noqa: E501
+            "[user] Write a SQL query to answer the following question based on the table schema.\n\n context: CREATE TABLE table_name_74 (icao VARCHAR, airport VARCHAR)\n\n question: Name the ICAO for lilongwe international airport [/user] [assistant]",  # noqa: E501
             SamplingParams(temperature=0.0,
                            logprobs=1,
                            prompt_logprobs=1,
@@ -65,14 +65,14 @@ def create_test_prompts_no_churn(
                            stop_token_ids=[32003]),
             LoRARequest("sql-lora", 1, lora_path_1)),
         (
-            "[user] Write a SQL query to answer the question based on the table schema.\n\n context: CREATE TABLE table_name_74 (icao VARCHAR, airport VARCHAR)\n\n question: Name the ICAO for lilongwe international airport [/user] [assistant]",  # noqa: E501
+            "[user] Write a SQL query to answer the following question based on the table schema.\n\n context: CREATE TABLE table_name_74 (icao VARCHAR, airport VARCHAR)\n\n question: Name the ICAO for lilongwe international airport [/user] [assistant]",  # noqa: E501
             SamplingParams(temperature=0.0,
                            logprobs=1,
                            prompt_logprobs=1,
                            max_tokens=128,
                            stop_token_ids=[32003]),
             LoRARequest("sql-lora", 1, lora_path_1)),
-    ][:] for _ in range(5)]
+    ][:] for _ in range(1)]
 
 
 def create_test_prompts_churn(
@@ -81,7 +81,7 @@ def create_test_prompts_churn(
 ):
     return [[
         (
-            "[user] Write a SQL query to answer the question based on the table schema.\n\n context: CREATE TABLE table_name_74 (icao VARCHAR, airport VARCHAR)\n\n question: Name the ICAO for lilongwe international airport [/user] [assistant]",  # noqa: E501
+            "[user] Write a SQL query to answer the following question based on the table schema.\n\n context: CREATE TABLE table_name_74 (icao VARCHAR, airport VARCHAR)\n\n question: Name the ICAO for lilongwe international airport [/user] [assistant]",  # noqa: E501
             SamplingParams(temperature=0.0,
                            logprobs=1,
                            prompt_logprobs=1,
@@ -89,14 +89,14 @@ def create_test_prompts_churn(
                            stop_token_ids=[32003]),
             LoRARequest("sql-lora", 1, lora_path_1)),
         (
-            "[user] Write a SQL query to answer the question based on the table schema.\n\n context: CREATE TABLE table_name_74 (icao VARCHAR, airport VARCHAR)\n\n question: Name the ICAO for lilongwe international airport [/user] [assistant]",  # noqa: E501
+            "[user] Write a SQL query to answer the following question based on the table schema.\n\n context: CREATE TABLE table_name_74 (icao VARCHAR, airport VARCHAR)\n\n question: Name the ICAO for lilongwe international airport [/user] [assistant]",  # noqa: E501
             SamplingParams(temperature=0.0,
                            logprobs=1,
                            prompt_logprobs=1,
                            max_tokens=128,
                            stop_token_ids=[32003]),
             LoRARequest("sql-lora2", 2, lora_path_2)),
-    ][:] for _ in range(5)]
+    ][:] for _ in range(1)]
 
 
 
@@ -215,8 +215,8 @@ def main():
     """Main function that sets up and runs the prompt processing."""
     engine = initialize_engine()
     # lora_path = snapshot_download(repo_id="yard1/llama-2-7b-sql-lora-test")
-    lora_path_1 = "/opt/dlami/nvme/hf_cache/hub/models--yard1--llama-2-7b-sql-lora-test-1/snapshots/0dfa347e8877a4d4ed19ee56c140fa518470028c"
-    lora_path_2 = "/opt/dlami/nvme/hf_cache/hub/models--yard1--llama-2-7b-sql-lora-test-2/snapshots/0dfa347e8877a4d4ed19ee56c140fa518470028c"
+    lora_path_1 = "/data/hf_cache/hub/models--yard1--llama-2-7b-sql-lora-test-1/snapshots/0dfa347e8877a4d4ed19ee56c140fa518470028c"
+    lora_path_2 = "/data/hf_cache/hub/models--yard1--llama-2-7b-sql-lora-test-2/snapshots/0dfa347e8877a4d4ed19ee56c140fa518470028c"
     test_prompts_churn = create_test_prompts_churn(lora_path_1, lora_path_2)
     test_prompts_no_churn = create_test_prompts_no_churn(lora_path_1, lora_path_2)
     print(len(test_prompts_churn), [len(batch) for batch in test_prompts_churn])

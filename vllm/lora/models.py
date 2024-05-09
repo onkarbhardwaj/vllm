@@ -148,6 +148,7 @@ class LoRAModel:
         loras: Dict[str, LoRALayerWeights] = {}
         for tensor_name, tensor in tensors.items():
             module_name, is_lora_a, is_lora_b, is_lora_sigma = parse_fine_tuned_lora_name(tensor_name)
+            logger.info(f"Attempting to read LoRA layers for module {module_name}: {is_lora_a}, {is_lora_b}, {is_lora_sigma}")
             if module_name not in loras:
                 lora_embeddings_tensor = None
                 if embeddings:
@@ -358,8 +359,13 @@ class LoRAModelManager:
             module_lora = lora_model.get_lora(module_name)
             if module_lora:
                 module_lora.optimize()
-                module.set_lora(index, module_lora.lora_a, module_lora.lora_b,
-                                module_lora.embeddings_tensor)
+                # logger.sigma(f"Calling to set lora for {module_name}")
+                if hasattr(module_lora, "lora_sigma"):
+                    module.set_lora(index, module_lora.lora_a, module_lora.lora_b,
+                                    module_lora.embeddings_tensor, module_lora.lora_sigma)        
+                else:
+                    module.set_lora(index, module_lora.lora_a, module_lora.lora_b,
+                                    module_lora.embeddings_tensor)
             else:
                 module.reset_lora(index)
         return True

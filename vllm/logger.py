@@ -12,6 +12,26 @@ from typing import Dict, Optional
 
 import vllm.envs as envs
 
+logging.SIGMA = 19
+logging.addLevelName(logging.SIGMA, "SIGMA")
+
+def sigma(self, message, *args, **kwargs):
+    if self.isEnabledFor(logging.SIGMA):
+        self._log(logging.SIGMA, message, args, **kwargs)
+
+logging.Logger.sigma = sigma
+
+logging.SIGMADEBUG = 18
+logging.addLevelName(logging.SIGMADEBUG, "SIGMADEBUG")
+
+def sigmadebug(self, message, *args, **kwargs):
+    if self.isEnabledFor(logging.SIGMADEBUG):
+        self._log(logging.SIGMADEBUG, message, args, **kwargs)
+
+
+logging.Logger.sigmadebug = sigmadebug
+
+
 VLLM_CONFIGURE_LOGGING = envs.VLLM_CONFIGURE_LOGGING
 VLLM_LOGGING_CONFIG_PATH = envs.VLLM_LOGGING_CONFIG_PATH
 

@@ -17,7 +17,7 @@ from vllm.distributed import (get_tensor_model_parallel_rank,
                               tensor_model_parallel_gather)
 from vllm.distributed.utils import divide
 from vllm.logger import init_logger
-from vllm.lora.punica import add_lora, add_lora_slice, bgmv, add_lora_with_sigma
+from vllm.lora.punica import add_lora, add_lora_slice, bgmv, add_lora_with_sigma, add_lora_slice_with_sigma
 from vllm.model_executor.layers.linear import (ColumnParallelLinear,
                                                MergedColumnParallelLinear,
                                                QKVParallelLinear,
@@ -90,6 +90,7 @@ def _apply_lora_with_sigma(
     x = x.view(-1, x.shape[-1])
     output = output.view(-1, output.shape[-1])
     indices = indices.view(-1)
+    logger.info(f"Shapes: U {lora_a_stacked.shape}, Sigma {lora_sigma_stacked.shape}, V {lora_b_stacked.shape}")
     add_lora_with_sigma(output, x, lora_a_stacked, lora_b_stacked, lora_sigma_stacked, indices, 0, 1.0)
     return output.view_as(org_output)
 
@@ -121,6 +122,50 @@ def _apply_lora(
     output = output.view(-1, output.shape[-1])
     indices = indices.view(-1)
     add_lora(output, x, lora_a_stacked, lora_b_stacked, indices, 0, 1.0)
+    return output.view_as(org_output)
+
+
+def _apply_lora_packed_nslice_with_sigma(
+    x: torch.Tensor,
+    lora_a_stacked: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    lora_b_stacked: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    lora_sigma_stacked: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    indices: torch.Tensor,
+    output: torch.Tensor,
+    output_slices: Tuple[int, ...],
+):
+    """Applies lora to each input.
+
+    This method applies all loras to each input. It uses the
+    indices vector to determine which lora yields the
+    correct output. An index of -1 means no lora should be
+    applied. This method adds the final lora results to the
+    output.
+
+    This method is used for layers that are composed of multiple sublayers
+    (slices) packed together.
+
+    Input shapes:
+        x:                 (batch_size, hidden_dim)
+        lora_a_stacked:    3 element tuple of (num_loras, lora_rank, hidden_dim)
+        lora_b_stacked:    3 element tuple of (num_loras, output_dim, lora_rank)
+        indices:           (batch_size)
+        output:            (batch_size, q_slice_size + 2*kv_slice_size)
+        output_slices:     n-1 element tuple of (slice_size...),
+                           where n is number of slices
+    """
+    org_output = output
+    x = x.view(-1, x.shape[-1])
+    output = output.view(-1, output.shape[-1])
+    indices = indices.view(-1)
+    offset_left = 0
+    for slice_idx in range(len(output_slices)):
+        add_lora_slice_with_sigma(output, x, lora_a_stacked[slice_idx],
+                       lora_b_stacked[slice_idx],
+                       lora_sigma_stacked[slice_idx],
+                       indices, 0, 1.0, offset_left,
+                       output_slices[slice_idx])
+        offset_left += output_slices[slice_idx]
     return output.view_as(org_output)
 
 
@@ -205,6 +250,7 @@ class BaseLayerWithLoRA(nn.Module):
         lora_a: torch.Tensor,
         lora_b: torch.Tensor,
         embeddings_tensor: Optional[torch.Tensor],
+        lora_sigma: torch.Tensor = None
     ):
         """Overwrites lora tensors at index."""
         ...
@@ -231,8 +277,8 @@ class BaseLayerWithLoRA(nn.Module):
 class VocabParallelEmbeddingWithLoRA(BaseLayerWithLoRA):
 
     def __init__(self, base_layer: VocabParallelEmbedding) -> None:
-        logger.debug(f"Creating {self.__class__.__name__}")
         super().__init__()
+        logger.sigmadebug(f"Creating {self.__class__.__name__}")
         self.base_layer = base_layer
         self.embeddings_slice: Optional[Tuple[int, int]]
         self.embeddings_weights: Optional[torch.Tensor]
@@ -309,9 +355,10 @@ class VocabParallelEmbeddingWithLoRA(BaseLayerWithLoRA):
         lora_a: torch.Tensor,
         lora_b: torch.Tensor,
         embeddings_tensor: Optional[torch.Tensor],
+        lora_sigma: torch.Tensor = None
     ):
         self.reset_lora(index)
-        logger.info(f"lora_a and lora_b devices: {lora_a.get_device()}, {lora_b.get_device()}")
+        logger.sigma(f"lora_a and lora_b devices: {lora_a.get_device()}, {lora_b.get_device()}")
         self.lora_a_stacked[index, :lora_a.shape[0], :lora_a.shape[1]].copy_(
             lora_a, non_blocking=True)
         self.lora_b_stacked[index,
@@ -384,7 +431,7 @@ class ColumnParallelLinearWithLoRA(BaseLayerWithLoRA):
 
     def __init__(self, base_layer: ColumnParallelLinear) -> None:
         super().__init__()
-        logger.debug(f"Creating {self.__class__.__name__}")
+        logger.sigmadebug(f"Creating {self.__class__.__name__}")
         self.base_layer = base_layer
         self.tp_size = get_tensor_model_parallel_world_size()
         self.input_size = self.base_layer.input_size
@@ -418,7 +465,7 @@ class ColumnParallelLinearWithLoRA(BaseLayerWithLoRA):
             device=self.device,
         )
         if self.lora_config.sigma_optimizer:
-            logger.info(f"Creating stacked sigma for {self.__class__.__name__}")
+            logger.sigmadebug(f"Creating stacked sigma for {self.__class__.__name__}")
             self.lora_sigma_stacked = torch.zeros(
                 max_loras,
                 1,
@@ -454,7 +501,9 @@ class ColumnParallelLinearWithLoRA(BaseLayerWithLoRA):
         lora_a: torch.Tensor,
         lora_b: torch.Tensor,
         embeddings_tensor: Optional[torch.Tensor],
+        lora_sigma: torch.Tensor = None
     ):
+        logger.sigma(f"Setting LoRA for layer: {self.__class__.__name__}")
         self.reset_lora(index)
 
         if self.tp_size > 1:
@@ -478,6 +527,7 @@ class ColumnParallelLinearWithLoRA(BaseLayerWithLoRA):
                 :lora_a.shape[0],
                 :lora_a.shape[0]
             ].fill_diagonal_(1)
+            logger.info(f"{self.__class__.__name__} Copied tensor of shape [{lora_a.shape[0]}, {lora_a.shape[0]}] into stacked sigma")
 
 
     def set_mapping(
@@ -558,7 +608,7 @@ class MergedColumnParallelLinearWithLoRA(ColumnParallelLinearWithLoRA):
 
     def __init__(self, base_layer: MergedColumnParallelLinear) -> None:
         super().__init__(base_layer)
-        logger.debug(f"Creating {self.__class__.__name__}")
+        logger.sigmadebug(f"Creating {self.__class__.__name__}")
 
     def create_lora_weights(
             self,
@@ -627,8 +677,10 @@ class MergedColumnParallelLinearWithLoRA(ColumnParallelLinearWithLoRA):
         lora_a: torch.Tensor,
         lora_b: torch.Tensor,
         embeddings_tensor: Optional[torch.Tensor],
+        lora_sigma: torch.Tensor = None
     ):
         self.reset_lora(index)
+        logger.sigma(f"Setting LoRA for layer: {self.__class__.__name__}")
 
         if self.tp_size > 1:
             lora_a = self.slice_lora_a(lora_a)
@@ -686,7 +738,7 @@ class QKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
 
     def __init__(self, base_layer: QKVParallelLinear) -> None:
         super().__init__(base_layer)
-        logger.debug(f"Creating {self.__class__.__name__}")
+        logger.sigmadebug(f"Creating {self.__class__.__name__}")
         self.tp_size = get_tensor_model_parallel_world_size()
         self.q_proj_total_size = (self.base_layer.total_num_heads *
                                   self.base_layer.head_size)
@@ -703,8 +755,10 @@ class QKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
         lora_a: torch.Tensor,
         lora_b: torch.Tensor,
         embeddings_tensor: Optional[torch.Tensor],
+        lora_sigma: torch.Tensor = None
     ):
         self.reset_lora(index)
+        logger.sigma(f"Setting LoRA for layer: {self.__class__.__name__}")
         if self.tp_size > 1:
             tp_rank = get_tensor_model_parallel_rank()
             self.q_shard_id = tp_rank
@@ -750,7 +804,7 @@ class MergedQKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
 
     def __init__(self, base_layer: QKVParallelLinear) -> None:
         super().__init__(base_layer)
-        logger.debug(f"Creating {self.__class__.__name__}")
+        logger.sigmadebug(f"Creating {self.__class__.__name__}")
 
     def create_lora_weights(
             self,
@@ -824,7 +878,7 @@ class MergedQKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
             ),
         )
         if lora_config.sigma_optimizer:
-            logger.info(f"Creating stacked sigma for {self.__class__.__name__}")
+            logger.sigmadebug(f"Creating stacked sigma for {self.__class__.__name__}")
             self.lora_sigma_stacked = (
                 torch.zeros(
                     max_loras,
@@ -892,8 +946,10 @@ class MergedQKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
         lora_a: torch.Tensor,
         lora_b: torch.Tensor,
         embeddings_tensor: Optional[torch.Tensor],
+        lora_sigma: torch.Tensor = None,
     ):
         self.reset_lora(index)
+        logger.sigma(f"Setting LoRA for layer: {self.__class__.__name__}")
 
         if self.tp_size > 1:
             lora_a = self.slice_lora_a(lora_a)
@@ -928,17 +984,58 @@ class MergedQKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
                 index, 0, :lora_a[2].shape[1], :lora_a[2].shape[0]].copy_(
                     lora_a[2].T, non_blocking=True)
 
+        if self.lora_config.sigma_optimizer:   
+            if lora_sigma is not None and lora_sigma[0] is not None:
+                self.lora_sigma_stacked[0][
+                    index, 0,
+                    :, :
+                ] = 0
+                self.lora_sigma_stacked[0][
+                    index, 0,
+                    :lora_a[0].shape[1], :lora_a[0].shape[1]
+                ]._fill_diagonal(1)
+            if lora_sigma is not None and lora_sigma[1] is not None:
+                self.lora_sigma_stacked[1][
+                    index, 0,
+                    :, :
+                ] = 0
+                self.lora_sigma_stacked[1][
+                    index, 0,
+                    :lora_a[1].shape[1], :lora_a[1].shape[1]
+                ]._fill_diagonal(1)
+            if lora_sigma is not None and lora_sigma[2] is not None:
+                self.lora_sigma_stacked[2][
+                    index, 0,
+                    :, :
+                ] = 0
+                self.lora_sigma_stacked[2][
+                    index, 0,
+                    :lora_a[2].shape[1], :lora_a[2].shape[1]
+                ]._fill_diagonal(1)   
+
     def apply(self, x: torch.Tensor,
               bias: Optional[torch.Tensor]) -> torch.Tensor:
         output = self.base_layer.quant_method.apply(self.base_layer, x, bias)
-        _apply_lora_packed_nslice(
-            x,
-            self.lora_a_stacked,
-            self.lora_b_stacked,
-            self.indices[:self.indices_len[0]],
-            output,
-            self.output_slices,
-        )
+        if self.lora_config.sigma_optimizer:
+            _apply_lora_packed_nslice_with_sigma(
+                x,
+                self.lora_a_stacked,
+                self.lora_b_stacked,
+                self.lora_sigma_stacked,
+                self.indices[:self.indices_len[0]],
+                output,
+                self.output_slices,
+            )
+        else:
+            _apply_lora_packed_nslice(
+                x,
+                self.lora_a_stacked,
+                self.lora_b_stacked,
+                self.indices[:self.indices_len[0]],
+                output,
+                self.output_slices,
+            )
+
         return output
 
     @classmethod
@@ -954,7 +1051,7 @@ class RowParallelLinearWithLoRA(BaseLayerWithLoRA):
 
     def __init__(self, base_layer: RowParallelLinear) -> None:
         super().__init__()
-        logger.debug(f"Creating {self.__class__.__name__}")
+        logger.sigmadebug(f"Creating {self.__class__.__name__}")
         self.base_layer = base_layer
         self.input_size = self.base_layer.input_size_per_partition
         self.output_size = self.base_layer.output_size
@@ -994,7 +1091,7 @@ class RowParallelLinearWithLoRA(BaseLayerWithLoRA):
         )
 
         if lora_config.sigma_optimizer:
-            logger.info(f"Creating stacked sigma for {self.__class__.__name__}")
+            logger.sigmadebug(f"Creating stacked sigma for {self.__class__.__name__}")
             self.lora_sigma_stacked = torch.zeros(
                 (
                     max_loras,
@@ -1031,8 +1128,10 @@ class RowParallelLinearWithLoRA(BaseLayerWithLoRA):
         lora_a: torch.Tensor,
         lora_b: torch.Tensor,
         embeddings_tensor: Optional[torch.Tensor],
+        lora_sigma: torch.Tensor = None
     ):
         self.reset_lora(index)
+        logger.sigma(f"Setting LoRA for layer: {self.__class__.__name__}")
 
         if self.base_layer.tp_size > 1:
             lora_a = self.slice_lora_a(lora_a)
@@ -1129,7 +1228,7 @@ class LogitsProcessorWithLoRA(BaseLayerWithLoRA):
         device: torch.device,
     ) -> None:
         super().__init__()
-        logger.debug(f"Creating {self.__class__.__name__}")
+        logger.sigmadebug(f"Creating {self.__class__.__name__}")
         self.base_layer = base_layer
         self.hidden_size = hidden_size
         self.dtype = dtype
@@ -1210,8 +1309,10 @@ class LogitsProcessorWithLoRA(BaseLayerWithLoRA):
         lora_a: torch.Tensor,
         lora_b: torch.Tensor,
         embeddings_tensor: Optional[torch.Tensor],
+        lora_sigma: torch.Tensor = None
     ):
         self.reset_lora(index)
+        logger.sigma(f"Setting LoRA for layer: {self.__class__.__name__}")
         self.lora_a_stacked[index,
                             0, :lora_a.shape[1], :lora_a.shape[0]].copy_(
                                 lora_a.T, non_blocking=True)
